@@ -1,17 +1,12 @@
 # %%
 import gymnasium as gym
-from agent.agent import root_agent
-from agent.coach_callback import LLMCoachCallback
-from stable_baselines3 import DQN
-from stable_baselines3.common.env_util import make_vec_env
+from agent.agent import RLCoach
 
 # %%
 env_id = "LunarLander-v3"
 env_desc = """
-## Description
-This environment is a classic rocket trajectory optimization problem. According to Pontryagin’s maximum principle, it is optimal to fire the engine at full throttle or turn it off. This is the reason why this environment has discrete actions: engine on or off.
-
-There are two environment versions: discrete or continuous. The landing pad is always at coordinates (0,0). The coordinates are the first two numbers in the state vector. Landing outside of the landing pad is possible. Fuel is infinite, so an agent can learn to fly and then land on its first attempt.
+## Task
+Your task is to control the lander to land on the landing pad smoothly without crashing.
 
 ## Action Space
 There are four discrete actions available:
@@ -34,26 +29,11 @@ The episode finishes if:
 3. the lander is not awake. From the Box2D docs, a body which is not awake is a body which doesn’t move and doesn’t collide with any other body:
 """
 
-n_envs = 16
+n_envs = 4
 
 # %%
-env = gym.make(env_id, render_mode="rgb_array")
-vec_env = make_vec_env(env_id, n_envs=n_envs)
-model = DQN("MlpPolicy", env, verbose=0)
+coach = RLCoach(env_id, env_desc, n_envs=n_envs)
+model = coach.optimize()
+# coach.run_best_model()
 
 # %%
-callback = LLMCoachCallback(agent=root_agent, env_desc=env_desc)
-model.learn(total_timesteps=250_000, progress_bar=True, callback=callback)
-model.save("dqn_model")
-
-# %%
-eval_env = gym.make(env_id, render_mode="human")
-obs, _ = eval_env.reset()
-
-while True:
-    action, _states = model.predict(obs, deterministic=True)
-
-    obs, rewards, terminated, truncated, info = eval_env.step(action.item())
-
-    if terminated or truncated:
-        obs, _ = eval_env.reset()
