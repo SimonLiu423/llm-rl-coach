@@ -7,13 +7,12 @@ from google.adk.models.lite_llm import LiteLlm
 from google.adk.runners import InMemoryRunner, Runner
 from google.genai.types import Content, Part
 from optuna.samplers import BaseSampler
-from stable_baselines3 import PPO
+from stable_baselines3 import A2C, DQN, PPO, SAC, TD3
 from stable_baselines3.common.callbacks import (
     BaseCallback,
     EvalCallback,
-    StopTrainingOnNoModelImprovement,
 )
-from stable_baselines3.common.env_util import VecEnv, make_vec_env
+from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.monitor import Monitor
 
 from .wrapper import AgentModifiable
@@ -24,6 +23,9 @@ class RLCoach:
         self.env_id = env_id
         self.env_desc = env_desc
         self.n_envs = n_envs
+        self.avail_algo = {"A2C": A2C, "DQN": DQN, "PPO": PPO, "SAC": SAC, "TD3": TD3}
+        # To be decided by agent
+        self.algo = None
         self.step_code = None
         # Session constants for the ADK runner
         self.APP_NAME = "agents"
@@ -31,7 +33,9 @@ class RLCoach:
         self.SESSION_ID = "session"
 
         self.agent = Agent(
-            model=LiteLlm(model="openrouter/x-ai/grok-4.1-fast:free"),
+            model=LiteLlm(
+                model="openrouter/openai/gpt-5.1",
+            ),
             name="RL_Coach",
             description="A helpful assistant for user questions.",
             instruction="""
@@ -42,7 +46,7 @@ class RLCoach:
             The tech stack is Python, OpenAI Gymnasium and Stable Baselines3.
             You are residing in a custom Stable Baseline3 Callback class.
             """,
-            tools=[self._modify_env_step],
+            tools=[self._modify_env_step, self._select_algorithm],
         )
         self.runner = self._start_runner()
         self.session_service = self.runner.session_service
@@ -91,6 +95,22 @@ class RLCoach:
         # ret = self.train_vec_env.env_method("modify_step_fn", code_str)
         # return ret[0]
         return {"success": True}
+
+    def _select_algorithm(self, algo_name: str) -> dict:
+        """
+        Select a RL algorithm to train this agent.
+
+        Args:
+            algo_name (str): The name of the algorithm to select.
+
+        Returns:
+            dict: Success status or error message.
+        """
+        try:
+            self.algo = self.avail_algo[algo_name]
+            return {"success": True}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
 
     def query(self, prompt: str):
         """
@@ -152,6 +172,14 @@ class RLCoach:
                     """
         )
 
+    def query_algorithm(self):
+        self.query(
+            prompt=f"""
+                    Select a Stable Baselines3 algorithm to train this agent.
+                    Available algorithms: {self.avail_algo.keys()}
+                    """
+        )
+
     def objective(self, trial: optuna.Trial):
         # Suggest hyperparameters
         learning_rate = trial.suggest_float("learning_rate", 1e-5, 1e-2, log=True)
@@ -186,7 +214,7 @@ class RLCoach:
             wrapper_class=AgentModifiable,
             wrapper_kwargs=wrapper_kwargs,
         )
-        model = PPO(env=vec_env, verbose=0, **model_params)
+        model = self.algo(env=vec_env, verbose=0, **model_params)
 
         coach_callback = LLMCoachCallback(coach=self, env_desc=self.env_desc)
         callbacks = [eval_callback, coach_callback]
@@ -200,6 +228,11 @@ class RLCoach:
     def optimize(self):
         # sampler = LLMSampler(runner=self.runner)
         self.query_reward()
+        self.query_algorithm()
+
+        assert self.algo is not None, "Algorithm not selected"
+        assert self.step_code is not None, "Step code not modified"
+
         study = optuna.create_study(
             direction="maximize",
             storage="sqlite:///db.sqlite3",  # Saves data to file for dashboard
